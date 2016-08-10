@@ -167,6 +167,24 @@ class Job
     /** @ORM\Column(type = "integer", name="memoryUsageReal", nullable = true, options = {"unsigned": true}) */
     private $memoryUsageReal;
 
+    /* NAEX EXTENSION */
+    
+    /** @ORM\OneToOne(targetEntity = "\Naex\Vendor\JMS\JobQueueBundle\Entity\JobData", mappedBy = "job") */
+    private $jobData;
+
+    /**
+     * @ORM\ManyToOne(targetEntity="Job", inversedBy="childJobList")
+     * @ORM\JoinColumn(nullable=true)
+     */
+    private $parentJob;
+
+    /**
+     * @ORM\OneToMany(targetEntity="Job", mappedBy="parentJob")
+     */
+    private $childJobList;
+    
+    /* NAEX EXTENSION END */
+
     /**
      * This may store any entities which are related to this job, and are
      * managed by Doctrine.
@@ -205,6 +223,7 @@ class Job
         $this->dependencies = new ArrayCollection();
         $this->retryJobs = new ArrayCollection();
         $this->relatedEntities = new ArrayCollection();
+        $this->childJobList = new ArrayCollection();
     }
 
     public function __clone()
@@ -613,4 +632,87 @@ class Job
 
         return true;
     }
+
+    /* NAEX EXTENSION */
+
+    /**
+     * Set jobData
+     *
+     * @param \Naex\Vendor\JMS\JobQueueBundle\Entity\JobData $jobData
+     * @return Job
+     */
+    public function setJobData(\Naex\Vendor\JMS\JobQueueBundle\Entity\JobData $jobData = null)
+    {
+        $this->jobData = $jobData;
+    
+        return $this;
+    }
+
+    /**
+     * Get jobData
+     *
+     * @return \Naex\Vendor\JMS\JobQueueBundle\Entity\JobData 
+     */
+    public function getJobData()
+    {
+        return $this->jobData;
+    }
+
+    /**
+     * Set parentJob
+     *
+     * @param \JMS\JobQueueBundle\Entity\Job $parentJob
+     * @return Job
+     */
+    public function setParentJob(\JMS\JobQueueBundle\Entity\Job $parentJob = null)
+    {
+        $this->parentJob = $parentJob;
+    
+        return $this;
+    }
+
+    /**
+     * Get parentJob
+     *
+     * @return \JMS\JobQueueBundle\Entity\Job 
+     */
+    public function getParentJob()
+    {
+        return $this->parentJob;
+    }
+
+    /**
+     * Add childJobList
+     *
+     * @param \JMS\JobQueueBundle\Entity\Job $childJobList
+     * @return Job
+     */
+    public function addChildJobList(\JMS\JobQueueBundle\Entity\Job $childJobList)
+    {
+        $this->childJobList[] = $childJobList;
+    
+        return $this;
+    }
+
+    /**
+     * Remove childJobList
+     *
+     * @param \JMS\JobQueueBundle\Entity\Job $childJobList
+     */
+    public function removeChildJobList(\JMS\JobQueueBundle\Entity\Job $childJobList)
+    {
+        $this->childJobList->removeElement($childJobList);
+    }
+
+    /**
+     * Get childJobList
+     *
+     * @return \Doctrine\Common\Collections\Collection 
+     */
+    public function getChildJobList()
+    {
+        return $this->childJobList;
+    }
+
+    /* NAEX EXTENSION END */
 }
