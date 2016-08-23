@@ -31,6 +31,7 @@ use Symfony\Component\HttpKernel\Exception\FlattenException;
  *     @ORM\Index("sorting_index", columns = {"state", "priority", "id"}),
  * })
  * @ORM\ChangeTrackingPolicy("DEFERRED_EXPLICIT")
+ * @ORM\EntityListeners({"JMS\JobQueueBundle\Entity\Listener\JobListener"})
  *
  * @author Johannes M. Schmitt <schmittjoh@gmail.com>
  */
@@ -123,7 +124,7 @@ class Job
     private $args;
 
     /**
-     * @ORM\ManyToMany(targetEntity = "Job", fetch = "EAGER")
+     * @ORM\ManyToMany(targetEntity = "Job", inversedBy="incomingDependencies", fetch = "EAGER")
      * @ORM\JoinTable(name="jms_job_dependencies",
      *     joinColumns = { @ORM\JoinColumn(name = "source_job_id", referencedColumnName = "id") },
      *     inverseJoinColumns = { @ORM\JoinColumn(name = "dest_job_id", referencedColumnName = "id")}
@@ -169,19 +170,23 @@ class Job
 
     /* NAEX EXTENSION */
     
-    /** @ORM\OneToOne(targetEntity = "\Naex\Vendor\JMS\JobQueueBundle\Entity\JobData", mappedBy = "job") */
-    private $jobData;
+    /**
+     * @ORM\Column(type="text", nullable = true)
+     */
+    private $inputData;
 
     /**
-     * @ORM\ManyToOne(targetEntity="Job", inversedBy="childJobList")
-     * @ORM\JoinColumn(nullable=true)
+     * @ORM\Column(type="text", nullable = true)
      */
-    private $parentJob;
+    private $outputData;
 
     /**
-     * @ORM\OneToMany(targetEntity="Job", mappedBy="parentJob")
+     * @ORM\Column(type="float", nullable = true)
      */
-    private $childJobList;
+    private  $progressPercentage;
+
+    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies") */
+    private $incomingDependencies;
     
     /* NAEX EXTENSION END */
 
@@ -221,9 +226,9 @@ class Job
         $this->executeAfter = new \DateTime();
         $this->executeAfter = $this->executeAfter->modify('-1 second');
         $this->dependencies = new ArrayCollection();
+        $this->incomingDependencies = new ArrayCollection();
         $this->retryJobs = new ArrayCollection();
         $this->relatedEntities = new ArrayCollection();
-        $this->childJobList = new ArrayCollection();
     }
 
     public function __clone()
@@ -406,6 +411,11 @@ class Job
         }
 
         $this->dependencies->add($job);
+    }
+
+    public function removeDependency(Job $job)
+    {
+        $this->dependencies->removeElement($job);
     }
 
     public function getRuntime()
@@ -626,6 +636,10 @@ class Job
             return false;
         }
 
+        if (self::STATE_CANCELED === $this->state) {
+            return false;
+        }
+
         if (self::STATE_PENDING === $this->state && ! $this->isStartable()) {
             return false;
         }
@@ -636,82 +650,77 @@ class Job
     /* NAEX EXTENSION */
 
     /**
-     * Set jobData
+     * Set inputData
      *
-     * @param \Naex\Vendor\JMS\JobQueueBundle\Entity\JobData $jobData
+     * @param string $inputData
      * @return Job
      */
-    public function setJobData(\Naex\Vendor\JMS\JobQueueBundle\Entity\JobData $jobData = null)
+    public function setInputData($inputData)
     {
-        $this->jobData = $jobData;
+        $this->inputData = $inputData;
     
         return $this;
     }
 
     /**
-     * Get jobData
+     * Get inputData
      *
-     * @return \Naex\Vendor\JMS\JobQueueBundle\Entity\JobData 
+     * @return string 
      */
-    public function getJobData()
+    public function getInputData()
     {
-        return $this->jobData;
+        return $this->inputData;
     }
 
     /**
-     * Set parentJob
+     * Set outputData
      *
-     * @param \JMS\JobQueueBundle\Entity\Job $parentJob
+     * @param string $outputData
      * @return Job
      */
-    public function setParentJob(\JMS\JobQueueBundle\Entity\Job $parentJob = null)
+    public function setOutputData($outputData)
     {
-        $this->parentJob = $parentJob;
+        $this->outputData = $outputData;
     
         return $this;
     }
 
     /**
-     * Get parentJob
+     * Get outputData
      *
-     * @return \JMS\JobQueueBundle\Entity\Job 
+     * @return string 
      */
-    public function getParentJob()
+    public function getOutputData()
     {
-        return $this->parentJob;
+        return $this->outputData;
     }
 
     /**
-     * Add childJobList
+     * Set progressPercentage
      *
-     * @param \JMS\JobQueueBundle\Entity\Job $childJobList
+     * @param float $progressPercentage
      * @return Job
      */
-    public function addChildJobList(\JMS\JobQueueBundle\Entity\Job $childJobList)
+    public function setProgressPercentage($progressPercentage)
     {
-        $this->childJobList[] = $childJobList;
-    
+        $this->progressPercentage = $progressPercentage;
+
         return $this;
     }
 
     /**
-     * Remove childJobList
+     * Get progressPercentage
      *
-     * @param \JMS\JobQueueBundle\Entity\Job $childJobList
+     * @return float
      */
-    public function removeChildJobList(\JMS\JobQueueBundle\Entity\Job $childJobList)
+    public function getProgressPercentage()
     {
-        $this->childJobList->removeElement($childJobList);
+        return $this->progressPercentage;
     }
 
-    /**
-     * Get childJobList
-     *
-     * @return \Doctrine\Common\Collections\Collection 
-     */
-    public function getChildJobList()
+    public function getIncomingDependencies()
     {
-        return $this->childJobList;
+        return $this->incomingDependencies;
     }
 
     /* NAEX EXTENSION END */
