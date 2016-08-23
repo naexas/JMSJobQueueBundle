@@ -47,7 +47,10 @@ class Application extends BaseApplication
 
             return $rs;
         } catch (\Exception $ex) {
-            $this->saveDebugInformation($ex);
+            //NAEX CHANGE: We don't let saveDebugInformation throw an exception if it can't connect to mysql, because it would hide the current exception
+            try {
+                $this->saveDebugInformation($ex);
+            } catch(\Exception $e){}
 
             throw $ex;
         }
