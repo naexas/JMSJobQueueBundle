@@ -23,14 +23,15 @@ class JobListener
     {
         $em = $event->getEntityManager();
 
-        /** @var PersistentCollection $incomingDependencies */
         $incomingDependencies = $job->getIncomingDependencies();
-        if ($incomingDependencies instanceof PersistentCollection && $incomingDependencies->isInitialized()) {
-            foreach ($job->getIncomingDependencies() as $incomingDependency) {
-                if ($em->getUnitOfWork()->getEntityState($incomingDependency) == UnitOfWork::STATE_DETACHED) {
-                    $job->getIncomingDependencies()->removeElement($incomingDependency);
-                    $job->getIncomingDependencies()->add($em->getReference('JMSJobQueueBundle:Job', $incomingDependency->getId()));
-                }
+        if ($incomingDependencies instanceof PersistentCollection && !$incomingDependencies->isInitialized()) {
+            return;
+        }
+
+        foreach ($incomingDependencies as $incomingDependency) {
+            if ($em->getUnitOfWork()->getEntityState($incomingDependency) == UnitOfWork::STATE_DETACHED) {
+                $job->getIncomingDependencies()->removeElement($incomingDependency);
+                $job->getIncomingDependencies()->add($em->getReference('JMSJobQueueBundle:Job', $incomingDependency->getId()));
             }
         }
     }
