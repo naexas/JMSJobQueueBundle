@@ -309,7 +309,7 @@ class JobRepository extends EntityRepository
                 return;
 
             case Job::STATE_FINISHED:
-                if ($job->isRetryJob()) {
+                if ($job->isRetryJob()) {                    
                     $job->getOriginalJob()->setState($finalState);
                     $this->_em->persist($job->getOriginalJob());
                 }

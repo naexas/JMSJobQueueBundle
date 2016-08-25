@@ -185,7 +185,7 @@ class Job
      */
     private  $progressPercentage;
 
-    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies") */
+    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies", fetch = "EAGER") */
     private $incomingDependencies;
     
     /* NAEX EXTENSION END */
@@ -411,6 +411,7 @@ class Job
         }
 
         $this->dependencies->add($job);
+        $job->getIncomingDependencies()->add($this);
     }
 
     public function removeDependency(Job $job)
@@ -538,9 +539,10 @@ class Job
 
     public function addRetryJob(Job $job)
     {
-        if (self::STATE_RUNNING !== $this->state) {
-            throw new \LogicException('Retry jobs can only be added to running jobs.');
-        }
+        // NAEX HACK: manual retrying could add retry job from any failed state
+        // if (self::STATE_RUNNING !== $this->state) {
+        //   throw new \LogicException('Retry jobs can only be added to running jobs.');
+        // }
 
         $job->setOriginalJob($this);
         $this->retryJobs->add($job);
@@ -553,6 +555,11 @@ class Job
 
     public function isRetryJob()
     {
+        // NAEX HACK: If this returns true the job closing logic tries to close its original job recursively.
+        // If the job was created by manual retrying then InvalidStateTransitionException will be thrown in setState() method.
+        // To avoid this we must always return false.
+        // NOTE: Original jobs won't be closed
+        return false;
         return null !== $this->originalJob;
     }
 
