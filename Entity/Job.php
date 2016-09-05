@@ -185,7 +185,9 @@ class Job
      */
     private  $progressPercentage;
 
-    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies", fetch = "EAGER") */
+    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies", fetch = "EAGER")
+     *  @var Job[]
+     */
     private $incomingDependencies;
     
     /* NAEX EXTENSION END */
@@ -546,6 +548,9 @@ class Job
 
         $job->setOriginalJob($this);
         $this->retryJobs->add($job);
+
+        // NAEX HACK: we must change anything to store retryJobs into elasticSearch
+        $this->checked();
     }
 
     public function getRetryJobs()
@@ -725,6 +730,9 @@ class Job
         return $this->progressPercentage;
     }
 
+    /**
+     * @return Job[]
+     */
     public function getIncomingDependencies()
     {
         return $this->incomingDependencies;
