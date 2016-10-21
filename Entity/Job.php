@@ -169,6 +169,17 @@ class Job
     private $memoryUsageReal;
 
     /* NAEX EXTENSION */
+
+    /**
+     * @ORM\OneToMany(targetEntity = "Job", mappedBy="owner")
+     */
+    private $childList;
+
+    /**
+     * @ORM\ManyToOne(targetEntity = "Job", inversedBy = "childList", fetch = "EAGER")
+     * @ORM\JoinColumn(nullable=true)
+     */
+    private $owner;
     
     /**
      * @ORM\Column(type="text", nullable = true)
@@ -183,9 +194,10 @@ class Job
     /**
      * @ORM\Column(type="float", nullable = true)
      */
-    private  $progressPercentage;
+    private $progressPercentage;
 
-    /** @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies", fetch = "EAGER")
+    /**
+     *  @ORM\ManyToMany(targetEntity = "Job", mappedBy="dependencies", fetch = "EAGER")
      *  @var Job[]
      */
     private $incomingDependencies;
@@ -731,11 +743,46 @@ class Job
     }
 
     /**
-     * @return Job[]
+     * @return Job[]|ArrayCollection
      */
     public function getIncomingDependencies()
     {
         return $this->incomingDependencies;
+    }
+
+    /**
+     * @return Job
+     */
+    public function getOwner()
+    {
+        return $this->owner;
+    }
+
+    /**
+     * @param Job|null $job
+     */
+    public function setOwner($job)
+    {
+        $this->owner = $job;
+    }
+
+    /**
+     * @return Job[]
+     */
+    public function getChildList()
+    {
+        return $this->childList;
+    }
+
+    /**
+     * @param Job $job
+     * @return Job
+     */
+    public function addChild(Job $job)
+    {
+        $this->childList[] = $job;
+
+        return $this;
     }
 
     /* NAEX EXTENSION END */

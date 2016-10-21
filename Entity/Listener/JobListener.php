@@ -12,16 +12,27 @@
 namespace JMS\JobQueueBundle\Entity\Listener;
 
 use Doctrine\ORM\PersistentCollection;
-use JMS\DiExtraBundle\Annotation as DI;
 use Doctrine\ORM\Event\PreFlushEventArgs;
 use Doctrine\ORM\UnitOfWork;
+use JMS\DiExtraBundle\Annotation as DI;
 use JMS\JobQueueBundle\Entity\Job;
 
 class JobListener
 {
+    /**
+     * @param Job               $job
+     * @param PreFlushEventArgs $event
+     */
     public function preFlush(Job $job, PreFlushEventArgs $event)
     {
         $em = $event->getEntityManager();
+        $unitOfWork = $em->getUnitOfWork();
+
+        $owner = $job->getOwner();
+        if ($owner && $unitOfWork->getEntityState($owner) == UnitOfWork::STATE_DETACHED) {
+            $owner = $owner->getId() ? $em->getReference('JMSJobQueueBundle:Job', $owner->getId()) : null;
+            $job->setOwner($owner);
+        }
 
         $incomingDependencies = $job->getIncomingDependencies();
         if ($incomingDependencies instanceof PersistentCollection && !$incomingDependencies->isInitialized()) {
