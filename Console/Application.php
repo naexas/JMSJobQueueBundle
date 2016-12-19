@@ -33,7 +33,8 @@ class Application extends BaseApplication
         $kernel->boot();
         if ($kernel->getContainer()->getParameter('jms_job_queue.statistics')) {
             $this->insertStatStmt = "INSERT INTO jms_job_statistics (job_id, characteristic, createdAt, charValue) VALUES (:jobId, :name, :createdAt, :value)";
-            register_tick_function(array($this, 'onTick'));
+            //We had problem in onTick function ($this->input was null), now I switch this off instead of cheching whether input is null
+            //register_tick_function(array($this, 'onTick'));
         }
     }
 
