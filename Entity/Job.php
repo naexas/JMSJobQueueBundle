@@ -142,7 +142,7 @@ class Job
     private $exitCode;
 
     /** @ORM\Column(type = "smallint", name="maxRuntime", options = {"unsigned": true}) */
-    private $maxRuntime = 0;
+    private $maxRuntime = 600;
 
     /** @ORM\Column(type = "smallint", name="maxRetries", options = {"unsigned": true}) */
     private $maxRetries = 0;
