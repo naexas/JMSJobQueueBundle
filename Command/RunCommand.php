@@ -20,6 +20,8 @@ namespace JMS\JobQueueBundle\Command;
 
 use Doctrine\ORM\EntityManager;
 use JMS\JobQueueBundle\Entity\Repository\JobRepository;
+use Naex\Bundle\FrameworkBundle\Doctrine\DBAL\ConnectionManager;
+use Naex\Framework\SystemNoticeBundle\Service\SystemNotice;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Bridge\Doctrine\ManagerRegistry;
 use Symfony\Component\Process\Exception\ProcessFailedException;
@@ -54,6 +56,8 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
     /** @var array */
     private $runningJobs = array();
 
+    private $naexServiceContainer;
+
     protected function configure()
     {
         $this
@@ -61,45 +65,108 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             ->setDescription('Runs jobs from the queue.')
             ->addOption('max-runtime', 'r', InputOption::VALUE_REQUIRED, 'The maximum runtime in seconds.', 900)
             ->addOption('max-concurrent-jobs', 'j', InputOption::VALUE_REQUIRED, 'The maximum number of concurrent jobs.', 4)
-            ->addOption('idle-time', null, InputOption::VALUE_REQUIRED, 'Time to sleep when the queue ran out of jobs.', 2)
-        ;
+            ->addOption('idle-time', null, InputOption::VALUE_REQUIRED, 'Time to sleep when the queue ran out of jobs.', 2);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        $startTime = time();
+        try {
 
-        $maxRuntime = (integer) $input->getOption('max-runtime');
-        if ($maxRuntime <= 0) {
-            throw new InvalidArgumentException('The maximum runtime must be greater than zero.');
+            $startTime = time();
+
+            $maxRuntime = (integer) $input->getOption('max-runtime');
+            if ($maxRuntime <= 0) {
+                throw new InvalidArgumentException('The maximum runtime must be greater than zero.');
+            }
+
+            $maxJobs = (integer) $input->getOption('max-concurrent-jobs');
+            if ($maxJobs <= 0) {
+                throw new InvalidArgumentException('The maximum number of jobs per queue must be greater than zero.');
+            }
+
+            $idleTime = (integer) $input->getOption('idle-time');
+            if ($idleTime <= 0) {
+                throw new InvalidArgumentException('Time to sleep when idling must be greater than zero.');
+            }
+
+            $this->env = $input->getOption('env');
+            $this->verbose = $input->getOption('verbose');
+            $this->output = $output;
+            $this->registry = $this->getContainer()->get('doctrine');
+            $this->dispatcher = $this->getContainer()->get('event_dispatcher');
+            $this->getEntityManager()->getConnection()->getConfiguration()->setSQLLogger(null);
+            $this->naexServiceContainer = $this->getContainer()->get('naex.bundle.framework_bundle.dependency_injection.container');
+
+            $this->cleanUpStaleJobs();
+
+            $this->runJobs(
+                $startTime,
+                $maxRuntime,
+                $idleTime,
+                $maxJobs,
+                $this->getContainer()->getParameter('jms_job_queue.queue_options_defaults'),
+                $this->getContainer()->getParameter('jms_job_queue.queue_options')
+            );
+        } catch (\Exception $ex) {
+            throw $this->handleException($ex);
         }
+    }
 
-        $maxJobs = (integer) $input->getOption('max-concurrent-jobs');
-        if ($maxJobs <= 0) {
-            throw new InvalidArgumentException('The maximum number of jobs per queue must be greater than zero.');
+    private function tryUpdateJob($data)
+    {
+        try {
+            /** @var Process $process */
+            $process = $data['process'];
+            $state = $process->getExitCode() === 0 ? Job::STATE_FINISHED : Job::STATE_FAILED;
+
+            /** @var Job $job */
+            $job = $data['job'];
+            $job->setExitCode($process->getExitCode());
+            $job->setErrorOutput($process->getErrorOutput());
+            $job->setOutput($process->getOutput());
+            $job->setState($state);
+            $job->setRuntime(time() - $data['start_time']);
+
+            /** @var ConnectionManager $manager */
+            $manager = $this->naexServiceContainer->getService(ConnectionManager::_class);
+            $connection = $manager->createCloneConnection($this->getEntityManager()->getConnection());
+            $connection->executeUpdate("
+                UPDATE `jms_jobs` 
+                SET `id`= :id,
+                 `state`= :state,
+                 `exitCode`= :exitCode,
+                 `output`= :output,
+                 `errorOutput`= :errorOutput,
+                 `closedAt`= :closedAt,
+                 `runtime`= :runtime
+                WHERE `id`=:id
+            ", array(
+                "id"          => $job->getId(),
+                "state"       => $state,
+                "exitCode"    => $job->getExitCode(),
+                "output"      => $job->getOutput(),
+                "errorOutput" => $job->getErrorOutput(),
+                "closedAt"    => $job->getClosedAt()->format('Y-m-d H:i:s'),
+                "runtime"     => $job->getRuntime(),
+            ));
+
+            $this->getContainer()->get('fos_elastica.object_persister.system.job')->replaceOne($job);
+        } catch (\Exception $ex) {
+            // do nothing
         }
+    }
 
-        $idleTime = (integer) $input->getOption('idle-time');
-        if ($idleTime <= 0) {
-            throw new InvalidArgumentException('Time to sleep when idling must be greater than zero.');
-        }
+    private function buildMessage($data)
+    {
+        $msgFormat = "\tJob ID: %s | exit code: %s";
+//        if($data['process']->getErrorOutput()){
+//            $msgFormat .= " | error: %s";
+//        }
 
-        $this->env = $input->getOption('env');
-        $this->verbose = $input->getOption('verbose');
-        $this->output = $output;
-        $this->registry = $this->getContainer()->get('doctrine');
-        $this->dispatcher = $this->getContainer()->get('event_dispatcher');
-        $this->getEntityManager()->getConnection()->getConfiguration()->setSQLLogger(null);
-
-        $this->cleanUpStaleJobs();
-
-        $this->runJobs(
-            $startTime,
-            $maxRuntime,
-            $idleTime,
-            $maxJobs,
-            $this->getContainer()->getParameter('jms_job_queue.queue_options_defaults'),
-            $this->getContainer()->getParameter('jms_job_queue.queue_options')
+        return sprintf($msgFormat,
+            $data['job']->getId(),
+            $data['process']->getExitCode(),
+            $data['process']->getErrorOutput()
         );
     }
 
@@ -173,7 +240,7 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             $job = $jobDetails['job'];
 
             $queue = $job->getQueue();
-            if ( ! isset($runningJobsPerQueue[$queue])) {
+            if (!isset($runningJobsPerQueue[$queue])) {
                 $runningJobsPerQueue[$queue] = 0;
             }
             $runningJobsPerQueue[$queue] += 1;
@@ -191,25 +258,25 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             $newErrorOutput = substr($data['process']->getErrorOutput(), $data['error_output_pointer']);
             $data['error_output_pointer'] += strlen($newErrorOutput);
 
-            if ( ! empty($newOutput)) {
+            if (!empty($newOutput)) {
                 $event = new NewOutputEvent($data['job'], $newOutput, NewOutputEvent::TYPE_STDOUT);
                 $this->dispatcher->dispatch('jms_job_queue.new_job_output', $event);
                 $newOutput = $event->getNewOutput();
             }
 
-            if ( ! empty($newErrorOutput)) {
+            if (!empty($newErrorOutput)) {
                 $event = new NewOutputEvent($data['job'], $newErrorOutput, NewOutputEvent::TYPE_STDERR);
                 $this->dispatcher->dispatch('jms_job_queue.new_job_output', $event);
                 $newErrorOutput = $event->getNewOutput();
             }
 
             if ($this->verbose) {
-                if ( ! empty($newOutput)) {
-                    $this->output->writeln('Job '.$data['job']->getId().': '.str_replace("\n", "\nJob ".$data['job']->getId().": ", $newOutput));
+                if (!empty($newOutput)) {
+                    $this->output->writeln('Job ' . $data['job']->getId() . ': ' . str_replace("\n", "\nJob " . $data['job']->getId() . ": ", $newOutput));
                 }
 
-                if ( ! empty($newErrorOutput)) {
-                    $this->output->writeln('Job '.$data['job']->getId().': '.str_replace("\n", "\nJob ".$data['job']->getId().": ", $newErrorOutput));
+                if (!empty($newErrorOutput)) {
+                    $this->output->writeln('Job ' . $data['job']->getId() . ': ' . str_replace("\n", "\nJob " . $data['job']->getId() . ": ", $newErrorOutput));
                 }
             }
 
@@ -219,7 +286,7 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             if ($data['job']->getMaxRuntime() > 0 && $runtime > $data['job']->getMaxRuntime()) {
                 $data['process']->stop(5);
 
-                $this->output->writeln($data['job'].' terminated; maximum runtime exceeded.');
+                $this->output->writeln($data['job'] . ' terminated; maximum runtime exceeded.');
                 $this->getRepository()->closeJob($data['job'], Job::STATE_TERMINATED);
                 unset($this->runningJobs[$i]);
 
@@ -238,7 +305,7 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
                 continue;
             }
 
-            $this->output->writeln($data['job'].' finished with exit code '.$data['process']->getExitCode().'.');
+            $this->output->writeln($data['job'] . ' finished with exit code ' . $data['process']->getExitCode() . '.');
 
             // If the Job exited with an exception, let's reload it so that we
             // get access to the stack trace. This might be useful for listeners.
@@ -281,8 +348,7 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
         $pb = $this->getCommandProcessBuilder();
         $pb
             ->add($job->getCommand())
-            ->add('--jms-job-id='.$job->getId())
-        ;
+            ->add('--jms-job-id=' . $job->getId());
 
         foreach ($job->getArgs() as $arg) {
             $pb->add($arg);
@@ -292,21 +358,19 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
         $this->output->writeln(sprintf('Started %s.', $job));
 
         $this->runningJobs[] = array(
-            'process' => $proc,
-            'job' => $job,
-            'start_time' => time(),
-            'output_pointer' => 0,
+            'process'              => $proc,
+            'job'                  => $job,
+            'start_time'           => time(),
+            'output_pointer'       => 0,
             'error_output_pointer' => 0,
         );
     }
 
     /**
      * Cleans up stale jobs.
-     *
      * A stale job is a job where this command has exited with an error
      * condition. Although this command is very robust, there might be cases
      * where it might be terminated abruptly (like a PHP segfault, a SIGTERM signal, etc.).
-     *
      * In such an error condition, these jobs are cleaned-up on restart of this command.
      */
     private function cleanUpStaleJobs()
@@ -316,7 +380,7 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             // If the original job has retry jobs, then one of them is still in
             // running state. We can skip the original job here as it will be
             // processed automatically once the retry job is processed.
-            if ( ! $job->isRetryJob() && count($job->getRetryJobs()) > 0) {
+            if (!$job->isRetryJob() && count($job->getRetryJobs()) > 0) {
                 continue;
             }
 
@@ -324,9 +388,8 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
             $pb
                 ->add('jms-job-queue:mark-incomplete')
                 ->add($job->getId())
-                ->add('--env='.$this->env)
-                ->add('--verbose')
-            ;
+                ->add('--env=' . $this->env)
+                ->add('--verbose');
 
             // We use a separate process to clean up.
             $proc = $pb->getProcess();
@@ -344,15 +407,14 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
 
         // PHP wraps the process in "sh -c" by default, but we need to control
         // the process directly.
-        if ( ! defined('PHP_WINDOWS_VERSION_MAJOR')) {
+        if (!defined('PHP_WINDOWS_VERSION_MAJOR')) {
             $pb->add('exec');
         }
 
         $pb
             ->add('php')
-            ->add($this->getContainer()->getParameter('kernel.root_dir').'/console')
-            ->add('--env='.$this->env)
-        ;
+            ->add($this->getContainer()->getParameter('kernel.root_dir') . '/console')
+            ->add('--env=' . $this->env);
 
         if ($this->verbose) {
             $pb->add('--verbose');
@@ -375,5 +437,38 @@ class RunCommand extends \Symfony\Bundle\FrameworkBundle\Command\ContainerAwareC
     private function getRepository()
     {
         return $this->getEntityManager()->getRepository('JMSJobQueueBundle:Job');
+    }
+
+    /**
+     * @param $ex
+     * @return \Exception
+     */
+    private function handleException($ex)
+    {
+        $finished = false;
+        $startTime = time();
+        $timeout = 300;
+
+        while (!$finished || (time() - $startTime) > $timeout) {
+            $hasRunningProc = array_reduce($this->runningJobs, function ($carry, $item) {
+                return $carry || $item['process']->isRunning();
+            }, false);
+
+            if (!$hasRunningProc) {
+                $jobDetails = array("Running jobs: \n");
+                foreach ($this->runningJobs as $data) {
+                    $jobDetails[] = $this->buildMessage($data);
+                    $this->tryUpdateJob($data);
+                }
+
+                $additionalMsg = count($jobDetails) > 1 ? implode("\n", $jobDetails) : "";
+                $ex = new \Exception("Error occurred in job queue. \n" . $additionalMsg, 0, $ex);
+                $finished = true;
+            } else {
+                sleep(5);
+            }
+        }
+
+        return $ex;
     }
 }
